@@ -23,6 +23,12 @@
 # this program.  If not, see <http://www.gnu.org/licenses/>.
 ################################################################################
 
+####
+#
+# updated from mysqlisms by Peter 'grin' Gervai, 2020
+#
+####
+
 ################################################################################
 # The subroutines storeXMLInDatabase() and getXMLFromMessage() are based on
 # John R. Levine's rddmarc (http://www.taugh.com/rddmarc/). The following
@@ -117,7 +123,7 @@ sub show_usage {
 
 # Define all possible configuration options.
 our ($debug, $delete_reports, $delete_failed, $reports_replace, $maxsize_xml, $compress_xml,
-	$dbname, $dbuser, $dbpass, $dbhost, $dbport,
+	$dburl, $dbuser, $dbpass,
   $imapserver, $imapport, $imapuser, $imappass, $imapignoreerror, $imapssl, $imaptls, $imapmovefolder,
 	$imapmovefoldererr, $imapreadfolder, $imapopt, $tlsverify, $processInfo);
 
@@ -215,10 +221,22 @@ if (exists $options{delete}) {$delete_reports = 1;}
 if (exists $options{info}) {$processInfo = 1;}
 
 # Setup connection to database server.
-my $dbh = DBI->connect("DBI:mysql:database=$dbname;host=$dbhost;port=$dbport",
-	$dbuser, $dbpass)
-or die "Cannot connect to database\n";
+my $dbh = DBI->connect($dburl, $dbuser, $dbpass) or die "Cannot connect to database";
 checkDatabase($dbh);
+
+# prepare DB handles once
+my $sth_get_org = $dbh->prepare(qq{ SELECT org, id FROM report WHERE reportid=? });
+
+#my $sql = qq{INSERT INTO report(serial,mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct, raw_xml)
+#		VALUES(NULL,FROM_UNIXTIME(?),FROM_UNIXTIME(?),?,?,?,?,?,?,?,?,?,?,?)};
+my $sql = qq{ INSERT INTO report(mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct)
+		VALUES(TO_TIMESTAMP(?),TO_TIMESTAMP(?),?,?,?,?,?,?,?,?,?,?)};
+my $sth_ins_report = $dbh->prepare($sql);
+
+my $sth_ins_rawxml = $dbh->prepare(qq{ INSERT INTO rptxml (report_id,raw_xml) VALUES(?,?) });
+
+my $sth_ins_rpt = $dbh->prepare(qq{INSERT INTO rptrecord(report_id,ip,rcount,disposition,spf_align,dkim_align,reason,dkimdomain,dkimresult,spfdomain,spfresult,identifier_hfrom)
+	VALUES(?,?,?,?,?,?,?,?,?,?,?,?)});
 
 
 # Process messages based on $reports_source.
@@ -741,20 +759,19 @@ sub storeXMLInDatabase {
         }
 
 	# see if already stored
-	my $sth = $dbh->prepare(qq{SELECT org, serial FROM report WHERE reportid=?});
-	$sth->execute($id);
-	while ( my ($xorg,$sid) = $sth->fetchrow_array() )
+	$sth_get_org->execute($id);
+	while ( my ($xorg,$sid) = $sth_get_org->fetchrow_array() )
 	{
 		if ($reports_replace) {
 			# $sid is the serial of a report with reportid=$id
 			# Remove this $sid from rptrecord and report table, but
 			# try to continue on failure rather than skipping.
 			print "Replacing $xorg $id.\n";
-			$dbh->do(qq{DELETE from rptrecord WHERE serial=?}, undef, $sid);
+			$dbh->do(qq{DELETE from rptrecord WHERE report_id=?}, undef, $sid);
 			if ($dbh->errstr) {
 				print "Cannot remove report data from database (". $dbh->errstr ."). Try to continue.\n";
 			}
-			$dbh->do(qq{DELETE from report WHERE serial=?}, undef, $sid);
+			$dbh->do(qq{DELETE from report WHERE report_id=?}, undef, $sid);
 			if ($dbh->errstr) {
 				print "Cannot remove report from database (". $dbh->errstr ."). Try to continue.\n";
 			}
@@ -766,8 +783,7 @@ sub storeXMLInDatabase {
 		}
 	}
 
-	my $sql = qq{INSERT INTO report(serial,mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct, raw_xml)
-			VALUES(NULL,FROM_UNIXTIME(?),FROM_UNIXTIME(?),?,?,?,?,?,?,?,?,?,?,?)};
+
 	my $storexml = $xml->{'raw_xml'};
 	if ($compress_xml) {
 		my $gzipdata;
@@ -783,17 +799,25 @@ sub storeXMLInDatabase {
 		print "Skipping storage of large XML (".length($storexml)." bytes) as defined in config file.\n";
 		$storexml = "";
 	}
-	$dbh->do($sql, undef, $from, $to, $domain, $org, $id, $email, $extra, $policy_adkim, $policy_aspf, $policy_p, $policy_sp, $policy_pct, $storexml);
+	$sth_ins_report->execute($from, $to, $domain, $org, $id, $email, $extra, $policy_adkim, $policy_aspf, $policy_p, $policy_sp, $policy_pct);
 	if ($dbh->errstr) {
 		print "Cannot add report to database (". $dbh->errstr ."). Skipped.\n";
 		return 0;
 	}
 
-	my $serial = $dbh->{'mysql_insertid'} ||  $dbh->{'insertid'};
+	my $serial = $dbh->last_insert_id('','','report');
 	if ($debug){
 		print " serial $serial ";
 	}
+	
+	$sth_ins_rawxml->execute($serial,$storexml);
+	if ($dbh->errstr) {
+		print "Cannot add report raw xml to database (". $dbh->errstr ."). Continuing.\n";
+	}
+	
+	
 	my $record = $xml->{'record'};
+
 	sub dorow($$) {
 		my ($serial,$recp) = @_;
 		my %r = %$recp;
@@ -838,24 +862,7 @@ sub storeXMLInDatabase {
 		#print "ip=$ip, count=$count, disp=$disp, r=$reason,";
 		#print "dkim=$dkim/$dkimresult, spf=$spf/$spfresult\n";
 
-		# What type of IP address?
-		my ($nip, $iptype, $ipval);
-		if ($debug) {
-			print "ip=$ip\n";
-		}
-		if($nip = inet_pton(AF_INET, $ip)) {
-			$ipval = unpack "N", $nip;
-			$iptype = "ip";
-		} elsif($nip = inet_pton(AF_INET6, $ip)) {
-			$ipval = "X'" . unpack("H*",$nip) . "'";
-			$iptype = "ip6";
-		} else {
-			print "??? mystery ip $ip\n";
-			next; # of dorow
-		}
-
-		$dbh->do(qq{INSERT INTO rptrecord(serial,$iptype,rcount,disposition,spf_align,dkim_align,reason,dkimdomain,dkimresult,spfdomain,spfresult,identifier_hfrom)
-			VALUES(?,$ipval,?,?,?,?,?,?,?,?,?,?)},undef,$serial,$count,$disp,$spf_align,$dkim_align,$reason,$dkim,$dkimresult,$spf,$spfresult,$identifier_hfrom);
+		my $res = $sth_ins_rpt->execute($serial,$ip,$count,$disp,$spf_align,$dkim_align,$reason,$dkim,$dkimresult,$spf,$spfresult,$identifier_hfrom);
 		if ($dbh->errstr) {
 			print "Cannot add report data to database (". $dbh->errstr ."). Skipped.\n";
 			return 0;
@@ -889,117 +896,25 @@ sub storeXMLInDatabase {
 
 
 ################################################################################
-
-# Check, if the database contains needed tables and columns. The idea is, that
-# the user only has to create the database/database_user. All needed tables and
-# columns are created automatically. Furthermore, if new columns are introduced,
-# the user does not need to make any changes to the database himself.
+# probably shall be recreated in some generic DBI manner.... someday.
+#
 sub checkDatabase {
 	my $dbh = $_[0];
 
-	my %tables = (
-		"report" => {
-			column_definitions 		=> [
-				"serial"		, "int(10) unsigned NOT NULL AUTO_INCREMENT",
-				"mindate"		, "timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP",
-				"maxdate"		, "timestamp NULL",
-				"domain"		, "varchar(255) NOT NULL",
-				"org"			, "varchar(255) NOT NULL",
-				"reportid"		, "varchar(255) NOT NULL",
-				"email"			, "varchar(255) NULL",
-				"extra_contact_info"	, "varchar(255) NULL",
-				"policy_adkim"		, "varchar(20) NULL",
-				"policy_aspf"		, "varchar(20) NULL",
-				"policy_p"		, "varchar(20) NULL",
-				"policy_sp"		, "varchar(20) NULL",
-				"policy_pct"		, "tinyint unsigned",
-				"raw_xml"		, "mediumtext",
-				],
-			additional_definitions 		=> "PRIMARY KEY (serial), UNIQUE KEY domain (domain,reportid)",
-			table_options			=> "ROW_FORMAT=COMPRESSED",
-			},
-		"rptrecord" =>{
-			column_definitions 		=> [
-				"id"			, "int(10) unsigned NOT NULL AUTO_INCREMENT PRIMARY KEY",
-				"serial"		, "int(10) unsigned NOT NULL",
-				"ip"			, "int(10) unsigned",
-				"ip6"			, "binary(16)",
-				"rcount"		, "int(10) unsigned NOT NULL",
-				"disposition"		, "enum('none','quarantine','reject')",
-				"reason"		, "varchar(255)",
-				"dkimdomain"		, "varchar(255)",
-				"dkimresult"		, "enum('none','pass','fail','neutral','policy','temperror','permerror')",
-				"spfdomain"		, "varchar(255)",
-				"spfresult"		, "enum('none','neutral','pass','fail','softfail','temperror','permerror','unknown')",
-				"spf_align"		, "enum('fail','pass','unknown') NOT NULL",
-				"dkim_align"		, "enum('fail','pass','unknown') NOT NULL",
-				"identifier_hfrom"	, "varchar(255)",
-				],
-			additional_definitions 		=> "KEY serial (serial,ip), KEY serial6 (serial,ip6)",
-			table_options			=> "",
-			},
-	);
-
-	# Get current tables in this DB.
-	my %db_tbl_exists = ();
-	for ( @{ $dbh->selectall_arrayref( "SHOW TABLES;") } ) {
-		$db_tbl_exists{$_->[0]} = 1;
+	if( !$dbh->table_info('', '', 'report') ) {
+		die "Table 'report' missing, please create the schema.";
 	}
 
-	# Create missing tables and missing columns.
-	for my $table ( keys %tables ) {
-
-		if (!$db_tbl_exists{$table}) {
-
-			# Table does not exist, build CREATE TABLE cmd from tables hash.
-			print "Adding missing table <" . $table . "> to the database.\n";
-			my $sql_create_table = "CREATE TABLE " . $table . " (\n";
-			for (my $i=0; $i <= $#{$tables{$table}{"column_definitions"}}; $i+=2) {
-				my $col_name = $tables{$table}{"column_definitions"}[$i];
-				my $col_def = $tables{$table}{"column_definitions"}[$i+1];
-				# add comma if second or later entry
-				if ($i != 0) {
-					$sql_create_table .= ",\n";
-				}
-				$sql_create_table .= $col_name . " " .$col_def;
-			}
-			# Add additional_definitions, if defined.
-			if ($tables{$table}{"additional_definitions"} ne "") {
-				$sql_create_table .= ",\n" . $tables{$table}{"additional_definitions"};
-			}
-			# Add options.
-			$sql_create_table .= ") " . $tables{$table}{"table_options"} . ";";
-			# Create table.
-			print "$sql_create_table\n" if $debug;
-			$dbh->do($sql_create_table);
-		} else {
-
-			#Table exists, get  current columns in this table from DB.
-			my %db_col_exists = ();
-			for ( @{ $dbh->selectall_arrayref( "SHOW COLUMNS FROM $table;") } ) {
-				$db_col_exists{$_->[0]} = $_->[1];
-			};
-
-			# Check if all needed columns are present, if not add them at the desired position.
-			my $insert_pos = "FIRST";
-			for (my $i=0; $i <= $#{$tables{$table}{"column_definitions"}}; $i+=2) {
-				my $col_name = $tables{$table}{"column_definitions"}[$i];
-				my $col_def = $tables{$table}{"column_definitions"}[$i+1];
-				my $short_def = $col_def;
-				$short_def =~ s/ +.*$//;
-				if (!$db_col_exists{$col_name}) {
-					# add column
-					my $sql_add_column = "ALTER TABLE $table ADD $col_name $col_def $insert_pos;";
-					print "$sql_add_column\n" if $debug;
-					$dbh->do($sql_add_column);
-				} elsif ($db_col_exists{$col_name} !~ /^\Q$short_def\E/) {
-					# modify column
-					my $sql_modify_column = "ALTER TABLE $table MODIFY COLUMN $col_name $col_def;";
-					print "$sql_modify_column\n" if $debug;
-					$dbh->do($sql_modify_column);
-				}
-				$insert_pos = "AFTER $col_name";
-			}
-		}
+	if( !$dbh->table_info('', '', 'rptrecord') ) {
+		die "Table 'rptrecord' missing, please create the schema.";
 	}
+
+	return 0;
 }
+
+### ADD
+## dkim_selector TEXT	(        ...->auth_results->dkim->selector)
+## reason_comment TEXT  (record->row->policy_evaluated->reaon->comment)
+
+
+# SELECT reportid,mindate,maxdate,org,domain,identifier_hfrom,ip,rcount,disposition,reason,spfdomain,spfresult,spf_align,dkimdomain,dkimresult,dkim_align FROM report AS r LEFT JOIN rptrecord AS rr ON(rr.report_id=r.id);

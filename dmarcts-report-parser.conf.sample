@@ -8,11 +8,10 @@
 $debug = 0;
 $delete_reports = 0;
 
-$dbname = 'dmarc';
+$dburl = "DBI:Pg:database=dmarc;host=localhost;port=5432";
+
 $dbuser = 'dmarc';
 $dbpass = 'password';
-$dbhost = 'dbhost'; # Set the hostname if we can't connect to the local socket.
-$dbport = '3306';
 
 $imapserver       = 'imap.server';
 $imapuser         = 'username';
@@ -29,11 +28,11 @@ $imapreadfolder   = 'dmarc';
 
 # If $imapmovefolder is set, processed IMAP messages will be moved (overruled by
 # the --delete option!)
-$imapmovefolder = 'dmarc/processed';
+$imapmovefolder = 'dmarc.processed';
 
 # If $imapmovefoldererr is set, IMAP messages that fail will be moved. If unset, failed messages
 # will move to $imapmovefolder (if it is set). Overruled by the --delete option!
-$imapmovefoldererr = 'Inbox.notProcessed';
+$imapmovefoldererr = 'dmarc.notProcessed';
 
 # maximum size of XML files to store in database, long files can cause transaction aborts
 $maxsize_xml = 50000;

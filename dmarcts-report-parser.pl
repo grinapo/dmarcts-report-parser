@@ -227,7 +227,12 @@ checkDatabase($dbh);
 # prepare DB handles once
 my $sth_get_org = $dbh->prepare(qq{ SELECT org, id FROM report WHERE reportid=? });
 
-#my $sql = qq{INSERT INTO report(serial,mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct, raw_xml)
+
+## Here we define the prepared database handlers.
+## If you need anything else than PSQL you can change them here.
+
+# Mysql version
+#my $sql = qq{INSERT INTO report(mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct)
 #		VALUES(NULL,FROM_UNIXTIME(?),FROM_UNIXTIME(?),?,?,?,?,?,?,?,?,?,?,?)};
 my $sql = qq{ INSERT INTO report(mindate,maxdate,domain,org,reportid,email,extra_contact_info,policy_adkim, policy_aspf, policy_p, policy_sp, policy_pct)
 		VALUES(TO_TIMESTAMP(?),TO_TIMESTAMP(?),?,?,?,?,?,?,?,?,?,?)};
@@ -767,6 +772,8 @@ sub storeXMLInDatabase {
 			# Remove this $sid from rptrecord and report table, but
 			# try to continue on failure rather than skipping.
 			print "Replacing $xorg $id.\n";
+			
+			# FIXME: politely these shall be moved to the other prepared statements...
 			$dbh->do(qq{DELETE from rptrecord WHERE report_id=?}, undef, $sid);
 			if ($dbh->errstr) {
 				print "Cannot remove report data from database (". $dbh->errstr ."). Try to continue.\n";
@@ -912,9 +919,10 @@ sub checkDatabase {
 	return 0;
 }
 
-### ADD
+### Todo:
+
 ## dkim_selector TEXT	(        ...->auth_results->dkim->selector)
 ## reason_comment TEXT  (record->row->policy_evaluated->reaon->comment)
 
-
-# SELECT reportid,mindate,maxdate,org,domain,identifier_hfrom,ip,rcount,disposition,reason,spfdomain,spfresult,spf_align,dkimdomain,dkimresult,dkim_align FROM report AS r LEFT JOIN rptrecord AS rr ON(rr.report_id=r.id);
+### Query the DB:
+# SELECT reportid,mindate,maxdate,org,domain,identifier_hfrom,ip,rcount,disposition,reason,spfdomain,spfresult,spf_align,dkimdomain,dkimresult,dkim_align FROM report AS r LEFT JOIN rptrecord AS rr ON(rr.report_id=r.id) ORDER BY ip,mintime,domain;

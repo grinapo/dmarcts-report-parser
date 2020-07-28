@@ -7,6 +7,8 @@ A Perl based tool to parse DMARC reports, based on John Levine's [rddmarc](http:
 * ~~Needed database tables and columns are created automatically, user only needs to provide a database. The database schema is compatible to the one used by rddmarc, but extends it by additional fields. Users can switch from rddmarc to dmarcts-report-parser without having to do any changes to the database by themselves.~~
 * Works under PostgreSQL. Probably works under anything _DBI_ supports.
 * Automatic table generation was removed until further notice due to lazyness to reimplement it completely differently, since it was extremely MySQL specific.
+* Changed db schema names and data types.
+* Store raw XML in a separate table with timestamps, so it's simple to remove big old records.
 
 ## Installation and Configuration
 

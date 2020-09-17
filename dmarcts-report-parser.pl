@@ -27,6 +27,7 @@
 #
 # updated from mysqlisms by Peter 'grin' Gervai, 2020
 #
+#aptitude install libmail-imapclient-perl libmail-mbox-messageparser-perl libmime-tools-perl libfile-mimeinfo-perl libperlio-gzip-perl
 ####
 
 ################################################################################
@@ -812,7 +813,7 @@ sub storeXMLInDatabase {
 		return 0;
 	}
 
-	my $serial = $dbh->last_insert_id('','','report');
+	my $serial = $dbh->last_insert_id(undef, undef, 'report', undef);
 	if ($debug){
 		print " serial $serial ";
 	}
@@ -840,27 +841,38 @@ sub storeXMLInDatabase {
 		my $identifier_hfrom = $r{'identifiers'}->{'header_from'};
 
 		my ($dkim, $dkimresult, $spf, $spfresult, $reason);
-		my $rp = $r{'auth_results'}->{'dkim'};
-		if(ref $rp eq "HASH") {
-			$dkim = $rp->{'domain'};
-			$dkim = undef if ref $dkim eq "HASH";
-			$dkimresult = $rp->{'result'};
-		} else { # array
-			# glom sigs together, report first result
-			$dkim = join '/',map { my $d = $_->{'domain'}; ref $d eq "HASH"?"": $d } @$rp;
-			$dkimresult = $rp->[0]->{'result'};
-		}
-		$rp = $r{'auth_results'}->{'spf'};
-		if(ref $rp eq "HASH") {
-			$spf = $rp->{'domain'};
-			$spfresult = $rp->{'result'};
-		} else { # array
-			# glom domains together, report first result
-			$spf = join '/',map { my $d = $_->{'domain'}; ref $d eq "HASH"? "": $d } @$rp;
-			$spfresult = $rp->[0]->{'result'};
+		if( !$r{'auth_results'} ) {
+			print "Report $serial record ip=$ip cnt=$count missing all auth_results!!\n";
+
+		} else {
+			if( my $rp = $r{'auth_results'}->{'dkim'} ) {
+				if(ref $rp eq "HASH") {
+					$dkim = $rp->{'domain'};
+					$dkim = undef if ref $dkim eq "HASH";
+					$dkimresult = $rp->{'result'};
+				} else { # array (FIXME: shall be a separate table)
+					# glom sigs together, report first result
+					$dkim = join '/',map { my $d = $_->{'domain'}; ref $d eq "HASH"?"": $d } @$rp;
+					$dkimresult = $rp->[0]->{'result'};
+				}
+			} else {
+				print "Report $serial record ip=$ip cnt=$count missing DKIM auth_results!\n";
+			}
+			if( my $rp = $r{'auth_results'}->{'spf'} ) {
+				if(ref $rp eq "HASH") {
+					$spf = $rp->{'domain'};
+					$spfresult = $rp->{'result'};
+				} else { # array (not probable)
+					# glom domains together, report first result
+					$spf = join '/',map { my $d = $_->{'domain'}; ref $d eq "HASH"? "": $d } @$rp;
+					$spfresult = $rp->[0]->{'result'};
+				}
+			} else {
+				print "Report $serial record ip=$ip cnt=$count missing SPF auth_results!\n";
+			}
 		}
 
-		$rp = $r{'row'}->{'policy_evaluated'}->{'reason'};
+		my $rp = $r{'row'}->{'policy_evaluated'}->{'reason'};
 		if(ref $rp eq "HASH") {
 			$reason = $rp->{'type'};
 		} else {
@@ -925,4 +937,4 @@ sub checkDatabase {
 ## reason_comment TEXT  (record->row->policy_evaluated->reaon->comment)
 
 ### Query the DB:
-# SELECT reportid,mindate,maxdate,org,domain,identifier_hfrom,ip,rcount,disposition,reason,spfdomain,spfresult,spf_align,dkimdomain,dkimresult,dkim_align FROM report AS r LEFT JOIN rptrecord AS rr ON(rr.report_id=r.id) ORDER BY ip,mintime,domain;
+# SELECT reportid,mindate,maxdate,org,domain,identifier_hfrom,ip,rcount,disposition,reason,spfdomain,spfresult,spf_align,dkimdomain,dkimresult,dkim_align FROM report AS r LEFT JOIN rptrecord AS rr ON(rr.report_id=r.id) ORDER BY ip,mindate,domain;
